@@ -60,8 +60,73 @@ function reset() {
     x: SUBS.S1.x + 40 + i * 26, y: SUBS.S1.y + 40, job: null, eta: 0, work: 0,
   }));
   document.getElementById('endcard').classList.remove('show');
-  toast(`STORM SEED ${SEED} · 3 LINE CREWS AT HARLAN FALLS`);
-  toast('TAP A CREW CHIP, THEN TAP DAMAGE.');
+}
+
+// ---- tutorial ----------------------------------------------------------------
+const TUT = {
+  step: 0,   // 1 power-up intact line · 2 tap crew · 3 tap damage · 4 speed · 5 power fixed line · 6 wrap
+  first: null,   // intact line off the dam — the "free win" that teaches the core verb
+  line: null,    // damaged line for the crew lesson
+  done: localStorage.getItem('bs2_tut') === '1',
+};
+function tutStart() {
+  TUT.step = 1;
+  const byDist = (arr) => arr
+    .map((l) => ({ l, d: Math.hypot(lineMid(l.id).x - SUBS.S1.x, lineMid(l.id).y - SUBS.S1.y) }))
+    .sort((a, b) => a.d - b.d)
+    .map((s) => s.l);
+  const intact = byDist(LINES.filter((l) => S.lines[l.id].dmg <= 0 && lineTouchesLive(l)));
+  TUT.first = intact.length ? intact[0].id : null;
+  // crew lesson: damaged line that touches the dam yard or the far end of the free-win line
+  const liveSoon = new Set(['S1']);
+  if (TUT.first) {
+    const fl = LINES.find((x) => x.id === TUT.first);
+    liveSoon.add(fl.a); liveSoon.add(fl.b);
+  }
+  const damaged = byDist(LINES.filter((l) => S.lines[l.id].dmg > 0));
+  const adjacent = damaged.filter((l) => liveSoon.has(l.a) || liveSoon.has(l.b));
+  TUT.line = (adjacent[0] || damaged[0] || { id: null }).id;
+  if (!TUT.first) TUT.step = TUT.line ? 2 : 6;
+}
+function tutFinish() { TUT.step = 0; TUT.done = true; localStorage.setItem('bs2_tut', '1'); }
+function tutHint() {
+  switch (TUT.step) {
+    case 1: return `WALKTHROUGH · THE DAM IS LIVE. TAP THE CIRCLED LINE ${TUT.first}, THEN "POWER UP THIS LINE".`;
+    case 2: return 'IT\'S SPREADING — WATCH FOR LIGHTS. NEXT LESSON: TAP THE C1 CREW BUTTON BELOW.';
+    case 3: return `NOW TAP THE FLASHING RED MARKER — LINE ${TUT.line} HAS STORM DAMAGE.`;
+    case 4: return 'CREW 1 IS ON IT. TAP 2× BELOW TO SPEED UP TIME WHILE THEY WORK.';
+    case 5: return `FIXED! TAP LINE ${TUT.line}, THEN "POWER UP THIS LINE".`;
+    case 6: return 'THAT\'S THE WHOLE GAME: FIX, POWER UP, PUSH EAST. PLANTS START THEMSELVES. CREWS 2 & 3 ARE WAITING.';
+    default: return '';
+  }
+}
+function tutAdvance() {
+  if (TUT.step === 1 && S.lines[TUT.first].state !== 'dead') TUT.step = TUT.line ? 2 : 6;
+  else if (TUT.step === 2 && S.sel === 0) TUT.step = 3;
+  else if (TUT.step === 3 && S.crews[0].job && S.crews[0].job.id === TUT.line) TUT.step = 4;
+  else if (TUT.step === 4 && S.lines[TUT.line].dmg <= 0) TUT.step = 5;
+  else if (TUT.step === 5 && S.lines[TUT.line].state !== 'dead') {
+    TUT.step = 6;
+    setTimeout(tutFinish, 14000);
+  }
+}
+
+// the single suggested next action, always current
+function nextHint() {
+  if (S.over) return '';
+  if (TUT.step) return tutHint();
+  const ready = LINES.find((l) => S.lines[l.id].state === 'dead'
+    && S.lines[l.id].dmg <= 0 && lineTouchesLive(l));
+  if (ready) return `NEXT · TAP LINE ${ready.id} AND POWER IT UP`;
+  const idle = S.crews.findIndex((c) => !c.job);
+  const anyDamage = LINES.some((l) => S.lines[l.id].dmg > 0)
+    || Object.keys(ZONES).some((z) => S.zones[z].dmg > 0);
+  const gen = genMw(), load = loadMw();
+  if (load > 0 && load * STABILITY.SOLID > gen)
+    return 'CAREFUL · SPARE POWER IS THIN — LET THE PLANTS CATCH UP BEFORE PUSHING ON';
+  if (idle >= 0 && anyDamage) return `NEXT · SEND CREW ${idle + 1} TO A RED MARKER`;
+  if (anyDamage) return 'CREWS ARE WORKING · SPEED UP TIME (2×)';
+  return 'DAMAGE CLEAR · POWER UP LINES AND LET THE WINDOWS FILL IN';
 }
 
 function toast(msg) { S.toasts.push({ msg, until: performance.now() + 4200 }); }
@@ -94,7 +159,7 @@ function tryEnergize(lineId) {
   const st = S.lines[lineId];
   if (st.state !== 'dead' || !lineRepaired(lineId) || !lineTouchesLive(l)) return;
   st.state = 'energizing'; st.t0 = S.elapsed();
-  toast(`ENERGIZING ${lineId} · ${ENERGIZE_MIN / 60}H SOAK`);
+  toast(`POWERING UP ${lineId} — TAKES ${ENERGIZE_MIN / 60} HOURS`);
   S.focus = null;
 }
 
@@ -207,7 +272,7 @@ function trip() {
     else ids.splice(ids.indexOf(id), 1);
   }
   S.trust = Math.max(0, S.trust - 0.4);
-  toast('UNDERFREQUENCY TRIP · LOAD SHED · TRUST FALLING');
+  toast('OVERLOAD! BREAKERS TRIPPED — LIGHTS LOST. LET THE PLANTS CATCH UP.');
 }
 
 function dawn() {
@@ -300,8 +365,19 @@ function draw() {
     ctx.stroke(); ctx.setLineDash([]);
     if (st.dmg > 0) {
       const m = toScreen(lineMid(l.id).x, lineMid(l.id).y);
+      const big = S.sel !== null || (TUT.step === 3 && TUT.line === l.id);
+      const r = big ? 6 + Math.sin(performance.now() / 180) * 2 : 4;
       ctx.save(); ctx.translate(m.x, m.y); ctx.rotate(Math.PI / 4);
-      ctx.fillStyle = COL.red; ctx.fillRect(-4, -4, 8, 8); ctx.restore();
+      ctx.fillStyle = COL.red; ctx.fillRect(-r, -r, r * 2, r * 2); ctx.restore();
+    }
+    const ringTarget = (TUT.step === 1 && TUT.first === l.id)
+      || ((TUT.step === 3 || TUT.step === 5) && TUT.line === l.id);
+    if (ringTarget) {
+      const m = toScreen(lineMid(l.id).x, lineMid(l.id).y);
+      ctx.strokeStyle = COL.energize; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, 16 + Math.sin(performance.now() / 200) * 4, 0, Math.PI * 2);
+      ctx.stroke();
     }
     if (S.focus && S.focus.kind === 'LINE' && S.focus.id === l.id) {
       ctx.strokeStyle = '#ffffff33'; ctx.lineWidth = 8;
@@ -450,27 +526,32 @@ function renderDrawer() {
   if (f.kind === 'LINE') {
     const st = S.lines[f.id];
     const l = LINES.find((x) => x.id === f.id);
-    const status = st.state === 'served' ? 'IN SERVICE'
-      : st.state === 'energizing' ? 'ENERGIZING · SOAKING'
-      : st.dmg > 0 ? `STORM DAMAGE · ${Math.ceil(st.dmg / 60)}H OF CREW WORK`
-      : lineTouchesLive(l) ? 'REPAIRED · READY TO ENERGIZE' : 'REPAIRED · NO LIVE SOURCE YET';
-    html = `<div class="t">LINE ${f.id}</div><div class="tags">TRANSMISSION</div><div class="row">${status}</div>`;
+    const status = st.state === 'served' ? 'LIVE'
+      : st.state === 'energizing' ? 'POWERING UP…'
+      : st.dmg > 0 ? `STORM DAMAGE — NEEDS A CREW (~${Math.ceil(st.dmg / 60)}H OF WORK)`
+      : lineTouchesLive(l) ? 'FIXED — READY TO POWER UP'
+      : 'FIXED — NO POWER HERE YET. LIGHT A PATH TO IT FIRST.';
+    html = `<div class="t">POWER LINE ${f.id}</div><div class="row">${status}</div>`;
     if (st.state === 'dead' && st.dmg <= 0 && lineTouchesLive(l)) {
-      html += `<button class="act" data-energize="${f.id}">ENERGIZE — ${ENERGIZE_MIN / 60}H SOAK</button>`;
+      html += `<button class="act" data-energize="${f.id}">POWER UP THIS LINE (${ENERGIZE_MIN / 60} HRS)</button>`;
     }
   } else if (f.kind === 'PLANT') {
     const u = UNITS[f.id], st = S.units[f.id];
     const mw = st.state === 'online' ? (u.stages ? u.stages[st.stage - 1] : u.mw) : 0;
-    html = `<div class="t">${u.name}</div><div class="tags">GENERATION · ${u.mw} MW MAX</div>
-      <div class="row">${st.state.toUpperCase()}${mw ? ` · ${mw} MW ON THE BUS` : ''}${u.needsGas && S.zones.Z8.picked === 0 ? ' · WAITING ON GAS (SERVE C-4)' : ''}</div>`;
+    const label = st.state === 'online' ? `RUNNING · MAKING ${mw} MW`
+      : st.state === 'starting' ? 'STARTING UP — GIVE IT A FEW HOURS'
+      : u.needsGas && S.zones.Z8.picked === 0 ? 'DARK — NEEDS GAS. POWER THE COMPRESSOR (C-4) FIRST.'
+      : 'DARK — STARTS ON ITS OWN ONCE POWER REACHES IT';
+    html = `<div class="t">${u.name}</div><div class="tags">POWER PLANT · UP TO ${u.mw} MW</div>
+      <div class="row">${label}</div>`;
   } else if (f.kind === 'ZONE') {
     const z = ZONES[f.id], st = S.zones[f.id];
     html = `<div class="t">${z.name}</div>
-      <div class="tags">LOAD · ${zoneMw(z)} MW${z.tags.length ? ' · ' + z.tags.join(' · ') : ''}</div>
-      <div class="row">${st.dmg > 0 ? `FEEDER DAMAGE · ${Math.ceil(st.dmg / 60)}H CREW WORK` : `${st.picked}/${z.blocks.length} BLOCKS PICKED UP`}</div>`;
+      <div class="tags">NEIGHBORHOOD · NEEDS ${zoneMw(z)} MW${z.tags.length ? ' · ' + z.tags.join(' · ') : ''}</div>
+      <div class="row">${st.dmg > 0 ? `LOCAL LINES DOWN — NEEDS A CREW (~${Math.ceil(st.dmg / 60)}H)` : st.picked >= z.blocks.length ? 'FULLY BACK ON' : st.picked > 0 ? 'COMING BACK ON, SECTION BY SECTION' : 'DARK — WAITING ON POWER'}</div>`;
   } else {
-    html = `<div class="t">${SUBS[f.id].name}</div><div class="tags">SUBSTATION</div>
-      <div class="row">${S.subs[f.id] === 'live' ? 'ENERGIZED' : 'DEAD BUS'}</div>`;
+    html = `<div class="t">${SUBS[f.id].name}</div><div class="tags">SWITCHYARD</div>
+      <div class="row">${S.subs[f.id] === 'live' ? 'LIVE' : 'DARK'}</div>`;
   }
   drawer.innerHTML = html;
   drawer.classList.add('open');
@@ -501,6 +582,29 @@ for (const [i, id] of ['sp0', 'sp1', 'sp2'].entries()) {
 }
 document.getElementById('again').addEventListener('click', () => { reset(); syncChips(); });
 
+document.getElementById('begin').addEventListener('click', () => {
+  document.getElementById('intro').classList.remove('show');
+  setSpeed(1);
+  if (!TUT.done) tutStart();
+});
+document.getElementById('skiptut').addEventListener('click', () => {
+  tutFinish();
+  document.getElementById('intro').classList.remove('show');
+  setSpeed(1);
+});
+document.getElementById('help').addEventListener('click', () => {
+  document.getElementById('legend').classList.add('show');
+});
+document.getElementById('legendclose').addEventListener('click', () => {
+  document.getElementById('legend').classList.remove('show');
+});
+
+function setSpeed(i) {
+  S.speed = i;
+  for (const b of ['sp0', 'sp1', 'sp2']) document.getElementById(b).classList.remove('on');
+  document.getElementById(['sp0', 'sp1', 'sp2'][i]).classList.add('on');
+}
+
 // ---- loop --------------------------------------------------------------------
 let last = performance.now();
 function frame(now) {
@@ -529,6 +633,11 @@ function frame(now) {
   S.toasts = S.toasts.filter((t) => t.until > now);
   tEl.innerHTML = S.toasts.slice(-3).map((t) => `<div>${t.msg}</div>`).join('');
 
+  tutAdvance();
+  document.getElementById('hintline').textContent = nextHint();
+  document.getElementById('crew0').classList.toggle('pulse', TUT.step === 2);
+  document.getElementById('sp2').classList.toggle('pulse', TUT.step === 4 && S.speed < 2);
+
   requestAnimationFrame(frame);
 }
 
@@ -536,11 +645,12 @@ window.addEventListener('resize', layout);
 layout();
 reset();
 syncChips();
+S.speed = 0;   // paused behind the intro card until BEGIN
 requestAnimationFrame(frame);
 
 // debug/test hook
 window.BS = {
-  S, LINES, ZONES,
+  S, LINES, ZONES, TUT,
   ff: (min) => { for (let i = 0; i < min; i += 5) tick(5); },
   assign: (ci, kind, id) => assignCrew(ci, { kind, id }),
   energize: tryEnergize,
