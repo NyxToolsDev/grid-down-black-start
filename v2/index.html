@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0b1016">
+<title>Black Start 2.0 — Living Map Preview</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%; background: #0b1016; color: #f8f4e4;
+    font-family: ui-monospace, 'Cascadia Mono', 'Roboto Mono', Menlo, monospace;
+    overflow: hidden; touch-action: manipulation;
+    -webkit-user-select: none; user-select: none;
+  }
+  #wrap { position: fixed; inset: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  #hud {
+    position: absolute; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 8px;
+    font-size: 13px; letter-spacing: 0.06em;
+    background: linear-gradient(#0b1016ee, #0b101600);
+    pointer-events: none;
+  }
+  #hud b { color: #f0a028; font-weight: 700; }
+  #servedWrap { text-align: right; }
+  #servedBar {
+    width: 110px; height: 5px; background: #232a33; border-radius: 3px;
+    margin-top: 4px; overflow: hidden;
+  }
+  #servedFill { height: 100%; width: 0%; background: #f0a028; border-radius: 3px; transition: width .4s; }
+
+  #speed {
+    position: absolute; left: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+    display: flex; gap: 8px;
+  }
+  #speed button {
+    min-width: 48px; min-height: 44px; border-radius: 10px;
+    border: 1px solid #33404e; background: #121a24; color: #8ca4b4;
+    font: inherit; font-size: 15px; cursor: pointer;
+  }
+  #speed button.on { background: #f0a028; border-color: #f0a028; color: #0b1016; font-weight: 700; }
+
+  #drawer {
+    position: absolute; left: 0; right: 0;
+    bottom: 0; transform: translateY(110%); transition: transform .22s ease-out;
+    background: #121a24f2; border-top: 1px solid #33404e;
+    padding: 14px 16px calc(env(safe-area-inset-bottom, 0px) + 14px);
+    font-size: 14px; line-height: 1.5;
+  }
+  #drawer.open { transform: translateY(0); }
+  #drawer .t { color: #f0a028; font-size: 15px; letter-spacing: 0.08em; }
+  #drawer .tags { color: #8ca4b4; font-size: 12px; margin-top: 2px; }
+  #drawer .row { margin-top: 6px; }
+
+  #banner {
+    position: absolute; top: 46px; left: 50%; transform: translateX(-50%);
+    font-size: 10px; letter-spacing: 0.22em; color: #56687a; pointer-events: none;
+  }
+  #endcard {
+    position: absolute; inset: 0; display: none; place-items: center;
+    background: #0b1016cc; text-align: center; line-height: 1.8;
+  }
+  #endcard.show { display: grid; }
+  #endcard .big { color: #f0a028; font-size: 20px; letter-spacing: 0.1em; }
+  #endcard button {
+    margin-top: 18px; min-height: 44px; padding: 0 22px; border-radius: 10px;
+    border: 1px solid #f0a028; background: none; color: #f0a028;
+    font: inherit; font-size: 15px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="map"></canvas>
+  <div id="hud">
+    <div>DAY <b id="day">1</b> <span id="clock">06:00</span></div>
+    <div id="servedWrap">SERVED <b id="served">0%</b><div id="servedBar"><div id="servedFill"></div></div></div>
+  </div>
+  <div id="banner">BLACK START 2.0 · LIVING MAP · M1 PREVIEW</div>
+  <div id="speed">
+    <button id="sp0">⏸</button>
+    <button id="sp1" class="on">1×</button>
+    <button id="sp2">2×</button>
+  </div>
+  <div id="drawer"></div>
+  <div id="endcard">
+    <div>
+      <div class="big">HARLAN VALLEY · LIGHTS ON</div>
+      <div id="endstats"></div>
+      <div style="color:#8ca4b4;font-size:12px;margin-top:10px">M1 preview: auto-restoration demo.<br>The real game restores at YOUR pace.</div>
+      <button id="again">WATCH AGAIN</button>
+    </div>
+  </div>
+</div>
+<script type="module" src="main.js"></script>
+</body>
+</html>
