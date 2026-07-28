@@ -39,6 +39,17 @@ S.elapsed = () => (S.day - 1) * 24 * 60 + S.min;
 const zoneMw = (z) => z.blocks.reduce((a, b) => a + b, 0);
 const winCount = (z) => Math.max(3, Math.round(zoneMw(z) / 5));
 
+// human names — nobody outside a control room says "S1-S4"
+const SHORT = {
+  S1: 'FALLS', S2: 'DOWNTOWN', S3: 'RIVERSIDE', S4: 'RAILYARD',
+  S5: 'MILLBROOK', S6: 'COMPRESSOR', S7: 'SIGNAL RIDGE', S8: 'WESTBROOK',
+  S9: 'GARFIELD', S10: 'RIVER XING', S11: 'CEDAR RUN', S12: 'CO-OP EAST',
+};
+function lineName(id) {
+  const l = LINES.find((x) => x.id === id);
+  return `${SHORT[l.a]}–${SHORT[l.b]}`;
+}
+
 function reset() {
   S.min = 6 * 60; S.day = 1; S.over = false; S.trust = 5; S.zeroDawns = 0;
   S.lastServedFrac = 0; S.servedMw = 0; S.sel = null; S.focus = null; S.toasts = [];
@@ -91,11 +102,11 @@ function tutStart() {
 function tutFinish() { TUT.step = 0; TUT.done = true; localStorage.setItem('bs2_tut', '1'); }
 function tutHint() {
   switch (TUT.step) {
-    case 1: return `WALKTHROUGH · THE DAM IS LIVE. TAP THE CIRCLED LINE ${TUT.first}, THEN "POWER UP THIS LINE".`;
+    case 1: return `WALKTHROUGH · THE DAM IS LIVE. TAP THE CIRCLED ${lineName(TUT.first)} LINE, THEN "POWER UP THIS LINE".`;
     case 2: return 'IT\'S SPREADING — WATCH FOR LIGHTS. NEXT LESSON: TAP THE C1 CREW BUTTON BELOW.';
-    case 3: return `NOW TAP THE FLASHING RED MARKER — LINE ${TUT.line} HAS STORM DAMAGE.`;
+    case 3: return `NOW TAP THE CIRCLED RED MARKER — THE ${lineName(TUT.line)} LINE HAS STORM DAMAGE.`;
     case 4: return 'CREW 1 IS ON IT. TAP 2× BELOW TO SPEED UP TIME WHILE THEY WORK.';
-    case 5: return `FIXED! TAP LINE ${TUT.line}, THEN "POWER UP THIS LINE".`;
+    case 5: return `FIXED! TAP THE CIRCLED ${lineName(TUT.line)} LINE, THEN "POWER UP THIS LINE".`;
     case 6: return 'THAT\'S THE WHOLE GAME: FIX, POWER UP, PUSH EAST. PLANTS START THEMSELVES. CREWS 2 & 3 ARE WAITING.';
     default: return '';
   }
@@ -113,18 +124,22 @@ function tutAdvance() {
 
 // the single suggested next action, always current
 function nextHint() {
+  S.hintLineId = null;
   if (S.over) return '';
   if (TUT.step) return tutHint();
   const ready = LINES.find((l) => S.lines[l.id].state === 'dead'
     && S.lines[l.id].dmg <= 0 && lineTouchesLive(l));
-  if (ready) return `NEXT · TAP LINE ${ready.id} AND POWER IT UP`;
+  if (ready) {
+    S.hintLineId = ready.id;
+    return `NEXT · TAP THE CIRCLED ${lineName(ready.id)} LINE AND POWER IT UP`;
+  }
   const idle = S.crews.findIndex((c) => !c.job);
   const anyDamage = LINES.some((l) => S.lines[l.id].dmg > 0)
     || Object.keys(ZONES).some((z) => S.zones[z].dmg > 0);
   const gen = genMw(), load = loadMw();
   if (load > 0 && load * STABILITY.SOLID > gen)
     return 'CAREFUL · SPARE POWER IS THIN — LET THE PLANTS CATCH UP BEFORE PUSHING ON';
-  if (idle >= 0 && anyDamage) return `NEXT · SEND CREW ${idle + 1} TO A RED MARKER`;
+  if (idle >= 0 && anyDamage) return `NEXT · TAP CREW C${idle + 1} BELOW, THEN A RED MARKER`;
   if (anyDamage) return 'CREWS ARE WORKING · SPEED UP TIME (2×)';
   return 'DAMAGE CLEAR · POWER UP LINES AND LET THE WINDOWS FILL IN';
 }
@@ -159,7 +174,7 @@ function tryEnergize(lineId) {
   const st = S.lines[lineId];
   if (st.state !== 'dead' || !lineRepaired(lineId) || !lineTouchesLive(l)) return;
   st.state = 'energizing'; st.t0 = S.elapsed();
-  toast(`POWERING UP ${lineId} — TAKES ${ENERGIZE_MIN / 60} HOURS`);
+  toast(`POWERING UP ${lineName(lineId)} — TAKES ${ENERGIZE_MIN / 60} HOURS`);
   S.focus = null;
 }
 
@@ -169,8 +184,9 @@ function assignCrew(ci, target) {
   const p = target.kind === 'line' ? lineMid(target.id)
     : { x: ZONES[target.id].x, y: ZONES[target.id].y };
   c.dest = p;
-  toast(`CREW ${ci + 1} ROLLING TO ${target.kind === 'line' ? target.id : ZONES[target.id].name}`);
+  toast(`CREW ${ci + 1} ROLLING TO ${target.kind === 'line' ? lineName(target.id) : ZONES[target.id].name}`);
   S.sel = null;
+  syncChips();
 }
 function lineMid(id) {
   const l = LINES.find((x) => x.id === id);
@@ -198,10 +214,11 @@ function tick(dtMin) {
         pool.dmg -= dtMin;
         if (pool.dmg <= 0) {
           pool.dmg = 0;
-          toast(`${c.job.kind === 'line' ? c.job.id : ZONES[c.job.id].name} REPAIRED`);
+          toast(`${c.job.kind === 'line' ? lineName(c.job.id) + ' LINE' : ZONES[c.job.id].name} FIXED`);
           c.job = null;
+          syncChips();
         }
-      } else c.job = null;
+      } else { c.job = null; syncChips(); }
     }
   }
 
@@ -371,7 +388,8 @@ function draw() {
       ctx.fillStyle = COL.red; ctx.fillRect(-r, -r, r * 2, r * 2); ctx.restore();
     }
     const ringTarget = (TUT.step === 1 && TUT.first === l.id)
-      || ((TUT.step === 3 || TUT.step === 5) && TUT.line === l.id);
+      || ((TUT.step === 3 || TUT.step === 5) && TUT.line === l.id)
+      || (TUT.step === 0 && S.hintLineId === l.id);
     if (ringTarget) {
       const m = toScreen(lineMid(l.id).x, lineMid(l.id).y);
       ctx.strokeStyle = COL.energize; ctx.lineWidth = 2;
@@ -402,6 +420,10 @@ function draw() {
     ctx.strokeStyle = live ? COL.served : '#33404e'; ctx.lineWidth = 1.5;
     ctx.fillRect(-5, -5, 10, 10); ctx.strokeRect(-5, -5, 10, 10);
     ctx.restore();
+    ctx.fillStyle = live ? '#a89f80' : '#4a5a6a';
+    ctx.font = '600 8px ui-monospace, monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.fillText(SHORT[id], p.x, p.y - 8);
   }
 
   const gen = genMw(), load = loadMw();
@@ -478,42 +500,62 @@ function dist2seg(px, py, ax, ay, bx, by) {
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
+// All hit-testing happens in SCREEN pixels so tap targets are finger-sized
+// regardless of zoom. When a crew is selected, red damage markers win first.
 canvas.addEventListener('pointerdown', (e) => {
   if (S.over) return;
-  const wpt = toWorld(e.clientX, e.clientY);
-  const tol = 50 / S.view.s;
+  const sx = e.clientX, sy = e.clientY;
+  const distTo = (wx, wy) => {
+    const p = toScreen(wx, wy);
+    return Math.hypot(p.x - sx, p.y - sy);
+  };
+  const nearest = (items, radius) => {
+    let best = null, bestD = radius;
+    for (const it of items) {
+      const d = distTo(it.x, it.y);
+      if (d <= bestD) { best = it; bestD = d; }
+    }
+    return best;
+  };
 
-  // nearest node
-  let best = null, bestD = Infinity;
+  // crews are always tappable (switch selection)
+  const crewHit = nearest(S.crews.map((c, i) => ({ x: c.x, y: c.y, id: i })), 24);
+  if (crewHit) { S.sel = S.sel === crewHit.id ? null : crewHit.id; syncChips(); return; }
+
+  if (S.sel !== null) {
+    // damage first, generous 36px targets
+    const marks = [];
+    for (const l of LINES) {
+      if (S.lines[l.id].dmg > 0) {
+        const m = lineMid(l.id);
+        marks.push({ x: m.x, y: m.y, kind: 'line', id: l.id });
+      }
+    }
+    for (const zid in ZONES) {
+      if (S.zones[zid].dmg > 0) marks.push({ x: ZONES[zid].x, y: ZONES[zid].y, kind: 'zone', id: zid });
+    }
+    const hit = nearest(marks, 36);
+    if (hit) return assignCrew(S.sel, { kind: hit.kind, id: hit.id });
+    toast('NO DAMAGE THERE — TAP ONE OF THE RED MARKERS.');
+    return;
+  }
+
+  // inspect: nodes at 24px, then lines at 16px from the wire itself
   const cand = [];
   for (const id in UNITS) cand.push({ x: UNITS[id].x, y: UNITS[id].y, kind: 'PLANT', id });
   for (const id in ZONES) cand.push({ x: ZONES[id].x, y: ZONES[id].y, kind: 'ZONE', id });
   for (const id in SUBS) cand.push({ x: SUBS[id].x, y: SUBS[id].y, kind: 'SUB', id });
-  for (const [i, c] of S.crews.entries()) cand.push({ x: c.x, y: c.y, kind: 'CREW', id: i });
-  for (const c of cand) {
-    const d = Math.hypot(c.x - wpt.x, c.y - wpt.y);
-    if (d < tol && d < bestD) { best = c; bestD = d; }
-  }
-  // else nearest line
+  let best = nearest(cand, 24);
   if (!best) {
+    let bestD = 16;
     for (const l of LINES) {
-      const d = dist2seg(wpt.x, wpt.y, SUBS[l.a].x, SUBS[l.a].y, SUBS[l.b].x, SUBS[l.b].y);
-      if (d < tol * 0.8 && d < bestD) { best = { kind: 'LINE', id: l.id }; bestD = d; }
+      const a = toScreen(SUBS[l.a].x, SUBS[l.a].y);
+      const b = toScreen(SUBS[l.b].x, SUBS[l.b].y);
+      const d = dist2seg(sx, sy, a.x, a.y, b.x, b.y);
+      if (d <= bestD) { best = { kind: 'LINE', id: l.id }; bestD = d; }
     }
   }
-
   if (!best) { S.focus = null; renderDrawer(); return; }
-
-  if (best.kind === 'CREW') { S.sel = S.sel === best.id ? null : best.id; syncChips(); return; }
-
-  // crew selected -> assign if target is damaged
-  if (S.sel !== null) {
-    if (best.kind === 'LINE' && S.lines[best.id].dmg > 0) return assignCrew(S.sel, { kind: 'line', id: best.id });
-    if (best.kind === 'ZONE' && S.zones[best.id].dmg > 0) return assignCrew(S.sel, { kind: 'zone', id: best.id });
-    toast('NO DAMAGE THERE. TAP A RED MARKER.');
-    return;
-  }
-
   S.focus = best;
   renderDrawer();
 });
@@ -531,7 +573,7 @@ function renderDrawer() {
       : st.dmg > 0 ? `STORM DAMAGE — NEEDS A CREW (~${Math.ceil(st.dmg / 60)}H OF WORK)`
       : lineTouchesLive(l) ? 'FIXED — READY TO POWER UP'
       : 'FIXED — NO POWER HERE YET. LIGHT A PATH TO IT FIRST.';
-    html = `<div class="t">POWER LINE ${f.id}</div><div class="row">${status}</div>`;
+    html = `<div class="t">${lineName(f.id)} LINE</div><div class="row">${status}</div>`;
     if (st.state === 'dead' && st.dmg <= 0 && lineTouchesLive(l)) {
       html += `<button class="act" data-energize="${f.id}">POWER UP THIS LINE (${ENERGIZE_MIN / 60} HRS)</button>`;
     }
@@ -650,7 +692,7 @@ requestAnimationFrame(frame);
 
 // debug/test hook
 window.BS = {
-  S, LINES, ZONES, TUT,
+  S, LINES, ZONES, TUT, lineName, toScreen: (x, y) => toScreen(x, y), lineMid,
   ff: (min) => { for (let i = 0; i < min; i += 5) tick(5); },
   assign: (ci, kind, id) => assignCrew(ci, { kind, id }),
   energize: tryEnergize,
