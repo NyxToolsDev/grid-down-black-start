@@ -32,6 +32,33 @@
   }
   #servedFill { height: 100%; width: 0%; background: #f0a028; border-radius: 3px; transition: width .4s; }
 
+  #sub {
+    position: absolute; top: 44px; left: 12px; right: 12px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; letter-spacing: 0.06em; color: #8ca4b4; pointer-events: none;
+  }
+  #trustWrap { display: flex; align-items: center; gap: 6px; }
+  #trustBar { width: 70px; height: 5px; background: #232a33; border-radius: 3px; overflow: hidden; }
+  #trustFill { height: 100%; width: 100%; background: #7bc47f; border-radius: 3px; transition: width .4s; }
+
+  #toasts {
+    position: absolute; left: 12px; right: 12px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 128px);
+    font-size: 11px; line-height: 1.7; color: #f0a028; letter-spacing: 0.04em;
+    pointer-events: none; text-shadow: 0 1px 3px #0b1016;
+  }
+  #crews {
+    position: absolute; left: 12px; right: 12px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 68px);
+    display: flex; gap: 8px;
+  }
+  #crews button {
+    flex: 1; min-height: 44px; border-radius: 10px;
+    border: 1px solid #33404e; background: #121a24; color: #5ac8fa;
+    font: inherit; font-size: 14px; letter-spacing: 0.08em; cursor: pointer;
+  }
+  #crews button.sel { background: #5ac8fa; color: #0b1016; border-color: #5ac8fa; font-weight: 700; }
+
   #speed {
     position: absolute; left: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
     display: flex; gap: 8px;
@@ -54,6 +81,12 @@
   #drawer .t { color: #f0a028; font-size: 15px; letter-spacing: 0.08em; }
   #drawer .tags { color: #8ca4b4; font-size: 12px; margin-top: 2px; }
   #drawer .row { margin-top: 6px; }
+  #drawer .act {
+    display: block; width: 100%; margin-top: 12px; min-height: 46px;
+    border-radius: 10px; border: 1px solid #f0a028; background: #f0a028;
+    color: #0b1016; font: inherit; font-size: 15px; font-weight: 700;
+    letter-spacing: 0.08em; cursor: pointer;
+  }
 
   #banner {
     position: absolute; top: 46px; left: 50%; transform: translateX(-50%);
@@ -79,7 +112,16 @@
     <div>DAY <b id="day">1</b> <span id="clock">06:00</span></div>
     <div id="servedWrap">SERVED <b id="served">0%</b><div id="servedBar"><div id="servedFill"></div></div></div>
   </div>
-  <div id="banner">BLACK START 2.0 · LIVING MAP · M1 PREVIEW</div>
+  <div id="sub">
+    <span id="gen">40 MW GEN / 0 LOAD</span>
+    <span id="trustWrap">TRUST <span id="trustBar"><span id="trustFill"></span></span></span>
+  </div>
+  <div id="toasts"></div>
+  <div id="crews">
+    <button id="crew0">C1 ·</button>
+    <button id="crew1">C2 ·</button>
+    <button id="crew2">C3 ·</button>
+  </div>
   <div id="speed">
     <button id="sp0">⏸</button>
     <button id="sp1" class="on">1×</button>
@@ -90,8 +132,8 @@
     <div>
       <div class="big">HARLAN VALLEY · LIGHTS ON</div>
       <div id="endstats"></div>
-      <div style="color:#8ca4b4;font-size:12px;margin-top:10px">M1 preview: auto-restoration demo.<br>The real game restores at YOUR pace.</div>
-      <button id="again">WATCH AGAIN</button>
+      <div style="color:#8ca4b4;font-size:12px;margin-top:10px">M2 preview: crews, energization order,<br>reserve margin, and the trust clock.</div>
+      <button id="again">RUN IT BACK</button>
     </div>
   </div>
 </div>
