@@ -289,6 +289,7 @@ function trip() {
     else ids.splice(ids.indexOf(id), 1);
   }
   S.trust = Math.max(0, S.trust - 0.4);
+  S.flash = 0.7;
   toast('OVERLOAD! BREAKERS TRIPPED — LIGHTS LOST. LET THE PLANTS CATCH UP.');
 }
 
@@ -331,6 +332,7 @@ function layout() {
   const bw = rot ? WORLD.h : WORLD.w, bh = rot ? WORLD.w : WORLD.h;
   const s = Math.min(w / bw, (h - 190) / bh) * 0.97;
   S.view = { s, ox: (w - bw * s) / 2, oy: 64 + (h - 190 - bh * s) / 2, rot };
+  buildStaticLayers();
 }
 function toScreen(x, y) {
   const v = S.view;
@@ -345,6 +347,70 @@ function toWorld(sx, sy) {
     : { x: (sx - v.ox) / v.s, y: (sy - v.oy) / v.s };
 }
 
+// ---- static art layers (rebuilt on resize; own rng so game rolls stay put)
+let terrainLayer = null, vignetteLayer = null;
+function buildStaticLayers() {
+  const w = window.innerWidth, h = window.innerHeight;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  let vs = 777;
+  const vr = () => (vs = (vs * 48271) % 2147483647) / 2147483647;
+
+  terrainLayer = document.createElement('canvas');
+  terrainLayer.width = w * dpr; terrainLayer.height = h * dpr;
+  const t = terrainLayer.getContext('2d');
+  t.setTransform(dpr, 0, 0, dpr, 0, 0);
+  t.fillStyle = COL.bg; t.fillRect(0, 0, w, h);
+
+  const p0 = toScreen(0, 0), p1 = toScreen(WORLD.w, WORLD.h);
+  const lx = Math.min(p0.x, p1.x), ly = Math.min(p0.y, p1.y);
+  const lw = Math.abs(p1.x - p0.x), lh = Math.abs(p1.y - p0.y);
+
+  const base = t.createLinearGradient(0, ly, 0, ly + lh);
+  base.addColorStop(0, '#111b26'); base.addColorStop(0.55, '#0e1620'); base.addColorStop(1, '#0b121b');
+  t.fillStyle = base; t.fillRect(lx, ly, lw, lh);
+
+  // soft hills and field patches
+  for (let i = 0; i < 80; i++) {
+    const x = lx + vr() * lw, y = ly + vr() * lh, r = 24 + vr() * 100;
+    const col = vr() < 0.45 ? 'rgba(28,44,36,0.20)' : 'rgba(30,38,52,0.18)';
+    const rg = t.createRadialGradient(x, y, 0, x, y, r);
+    rg.addColorStop(0, col); rg.addColorStop(1, 'rgba(0,0,0,0)');
+    t.fillStyle = rg; t.beginPath(); t.arc(x, y, r, 0, Math.PI * 2); t.fill();
+  }
+  // clumped forest stipple
+  t.fillStyle = 'rgba(36,56,42,0.5)';
+  for (let c = 0; c < 26; c++) {
+    const cx = lx + vr() * lw, cy = ly + vr() * lh, cr = 12 + vr() * 34;
+    for (let i = 0; i < 34; i++) {
+      const a = vr() * Math.PI * 2, d = vr() * cr;
+      t.fillRect(cx + Math.cos(a) * d, cy + Math.sin(a) * d, 2, 2);
+    }
+  }
+  // the Harlan River — gentle meander instead of a dead-straight band
+  const pts = [];
+  for (let yy = -40; yy <= WORLD.h + 40; yy += 50) {
+    const wob = Math.sin(yy * 0.004) * 42 + Math.sin(yy * 0.011 + 2) * 20;
+    pts.push(toScreen(RIVER.x + wob, yy));
+  }
+  const river = (width, col) => {
+    t.strokeStyle = col; t.lineWidth = width; t.lineJoin = 'round'; t.lineCap = 'round';
+    t.beginPath(); t.moveTo(pts[0].x, pts[0].y);
+    for (const p of pts) t.lineTo(p.x, p.y);
+    t.stroke();
+  };
+  river(76 * S.view.s, '#0a141d');
+  river(60 * S.view.s, '#152534');
+  river(18 * S.view.s, '#1b3044');
+
+  vignetteLayer = document.createElement('canvas');
+  vignetteLayer.width = w * dpr; vignetteLayer.height = h * dpr;
+  const vg = vignetteLayer.getContext('2d');
+  vg.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const rad = vg.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.38, w / 2, h / 2, Math.max(w, h) * 0.72);
+  rad.addColorStop(0, 'rgba(0,0,8,0)'); rad.addColorStop(1, 'rgba(0,0,8,0.42)');
+  vg.fillStyle = rad; vg.fillRect(0, 0, w, h);
+}
+
 // ---- draw ----------------------------------------------------------------------
 let dashOff = 0;
 function nightAlpha() {
@@ -357,19 +423,36 @@ function nightAlpha() {
 
 function draw() {
   const w = window.innerWidth, h = window.innerHeight;
-  ctx.fillStyle = COL.bg; ctx.fillRect(0, 0, w, h);
+  const now = performance.now();
+  const vdt = Math.min(0.05, (now - (S._lastDraw || now)) / 1000);
+  S._lastDraw = now;
+
+  if (terrainLayer) ctx.drawImage(terrainLayer, 0, 0, w, h);
+  else { ctx.fillStyle = COL.bg; ctx.fillRect(0, 0, w, h); }
   const p0 = toScreen(0, 0), p1 = toScreen(WORLD.w, WORLD.h);
   const lx = Math.min(p0.x, p1.x), ly = Math.min(p0.y, p1.y);
   const lw = Math.abs(p1.x - p0.x), lh = Math.abs(p1.y - p0.y);
-  ctx.fillStyle = COL.land; ctx.fillRect(lx, ly, lw, lh);
-  const ra = toScreen(RIVER.x - 34, RIVER.top), rb = toScreen(RIVER.x + 34, RIVER.bottom);
-  ctx.fillStyle = COL.river;
-  ctx.fillRect(Math.min(ra.x, rb.x), Math.min(ra.y, rb.y), Math.abs(rb.x - ra.x), Math.abs(rb.y - ra.y));
+
+  // drifting cloud shadows — the map breathes even when nothing happens
+  for (let i = 0; i < 3; i++) {
+    const cr = 130 + i * 55;
+    const cx = lx - cr + ((now * 0.008 + i * 977) % (lw + cr * 2));
+    const cy = ly + (0.18 + 0.27 * i) * lh + Math.sin(now * 0.0001 + i * 2.1) * 26;
+    const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, cr);
+    cg.addColorStop(0, 'rgba(2,4,10,0.10)'); cg.addColorStop(1, 'rgba(2,4,10,0)');
+    ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(cx, cy, cr, 0, Math.PI * 2); ctx.fill();
+  }
 
   for (const l of LINES) {
     const a = toScreen(SUBS[l.a].x, SUBS[l.a].y);
     const b = toScreen(SUBS[l.b].x, SUBS[l.b].y);
     const st = S.lines[l.id];
+    if (st.state !== 'dead') {  // glow pass under live/energizing wires
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+      ctx.strokeStyle = st.state === 'energizing' ? 'rgba(240,160,40,0.22)' : 'rgba(240,205,130,0.15)';
+      ctx.lineWidth = st.state === 'energizing' ? 9 : 7;
+      ctx.setLineDash([]); ctx.stroke();
+    }
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
     if (st.state === 'dead') {
       ctx.strokeStyle = COL.dead; ctx.lineWidth = 2; ctx.setLineDash([]);
@@ -432,6 +515,14 @@ function draw() {
     const z = ZONES[zid], st = S.zones[zid];
     const p = toScreen(z.x, z.y);
     const cols = Math.ceil(Math.sqrt(st.total * 1.6));
+    const litFrac = st.total ? st.lit / st.total : 0;
+    if (litFrac > 0) {  // warm town glow under lit windows
+      const r = (cols * 8) / 2 + 18;
+      const zg = ctx.createRadialGradient(p.x, p.y, 2, p.x, p.y, r);
+      zg.addColorStop(0, `rgba(255,205,100,${0.18 * litFrac})`);
+      zg.addColorStop(1, 'rgba(255,205,100,0)');
+      ctx.fillStyle = zg; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+    }
     for (let i = 0; i < st.total; i++) {
       const wx = p.x + (i % cols) * 8 - (cols * 8) / 2;
       const wy = p.y + Math.floor(i / cols) * 10 - 8;
@@ -459,6 +550,44 @@ function draw() {
     ctx.font = '700 11px ui-monospace, monospace';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(u.name[0], p.x, p.y + 1);
+    if (on) {  // steam drifting off a running plant
+      st.puffs = st.puffs || [];
+      if (Math.random() < vdt * 2.5 && st.puffs.length < 6) {
+        st.puffs.push({ ox: (Math.random() - 0.5) * 10, age: 0 });
+      }
+      for (let i = st.puffs.length - 1; i >= 0; i--) {
+        const pf = st.puffs[i];
+        pf.age += vdt;
+        if (pf.age > 1.6) { st.puffs.splice(i, 1); continue; }
+        const a = 0.20 * (1 - pf.age / 1.6);
+        ctx.fillStyle = `rgba(200,210,220,${a})`;
+        ctx.beginPath();
+        ctx.arc(p.x + pf.ox + pf.age * 4, p.y - 14 - pf.age * 20, 2.5 + pf.age * 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  // ambient sparks travelling live wires — the grid feels electric
+  S.sparks = S.sparks || [];
+  S.sparkT = (S.sparkT || 0) + vdt;
+  if (S.sparkT > 2.1) {
+    S.sparkT = 0;
+    const live = LINES.filter((l) => S.lines[l.id].state === 'served');
+    if (live.length) S.sparks.push({ id: live[Math.floor(Math.random() * live.length)].id, t: 0 });
+  }
+  for (let i = S.sparks.length - 1; i >= 0; i--) {
+    const sp = S.sparks[i];
+    sp.t += vdt * 0.55;
+    if (sp.t >= 1) { S.sparks.splice(i, 1); continue; }
+    const l = LINES.find((x) => x.id === sp.id);
+    if (!l || S.lines[sp.id].state !== 'served') { S.sparks.splice(i, 1); continue; }
+    const a = toScreen(SUBS[l.a].x, SUBS[l.a].y);
+    const b = toScreen(SUBS[l.b].x, SUBS[l.b].y);
+    const x = a.x + (b.x - a.x) * sp.t, y = a.y + (b.y - a.y) * sp.t;
+    const sg = ctx.createRadialGradient(x, y, 0, x, y, 7);
+    sg.addColorStop(0, 'rgba(255,240,190,0.9)'); sg.addColorStop(1, 'rgba(255,240,190,0)');
+    ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
   }
 
   // crews
@@ -491,6 +620,49 @@ function draw() {
       }
     }
   }
+
+  // canon weather: rain moves in Day 2, frost snow Days 4-5
+  const weather = S.day === 2 ? 'rain' : (S.day === 4 || S.day === 5) ? 'snow' : null;
+  if (weather) {
+    S.wparts = S.wparts || Array.from({ length: 120 }, () => ({
+      x: Math.random() * w, y: Math.random() * h, v: 0.5 + Math.random() * 0.8,
+    }));
+    if (weather === 'rain') {
+      ctx.strokeStyle = 'rgba(140,164,180,0.20)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (const wp of S.wparts) {
+        wp.y += wp.v * vdt * 640; wp.x += wp.v * vdt * 140;
+        if (wp.y > h) { wp.y = -12; wp.x = Math.random() * w; }
+        ctx.moveTo(wp.x, wp.y); ctx.lineTo(wp.x - 3, wp.y - 12);
+      }
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = 'rgba(220,228,236,0.35)';
+      for (const wp of S.wparts) {
+        wp.y += wp.v * vdt * 60;
+        wp.x += Math.sin((wp.y + wp.v * 999) * 0.02) * 0.4;
+        if (wp.y > h) { wp.y = -6; wp.x = Math.random() * w; }
+        ctx.fillRect(wp.x, wp.y, 2, 2);
+      }
+    }
+  } else S.wparts = null;
+
+  // time-of-day grade
+  const hr = S.min / 60;
+  let tint = null;
+  if (hr >= 5 && hr < 8) tint = 'rgba(255,150,60,0.05)';
+  else if (hr >= 17 && hr < 20.5) tint = 'rgba(255,110,70,0.07)';
+  else if (hr >= 8 && hr < 17) tint = 'rgba(150,190,225,0.04)';
+  else tint = 'rgba(40,70,140,0.07)';
+  ctx.fillStyle = tint; ctx.fillRect(0, 0, w, h);
+
+  if (S.flash > 0) {  // grid trip: red pulse
+    S.flash -= vdt;
+    ctx.fillStyle = `rgba(240,70,55,${Math.max(0, S.flash) * 0.3})`;
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  if (vignetteLayer) ctx.drawImage(vignetteLayer, 0, 0, w, h);
 }
 
 // ---- input -------------------------------------------------------------------
