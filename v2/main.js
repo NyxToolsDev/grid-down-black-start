@@ -53,6 +53,9 @@ function lineName(id) {
 function reset() {
   S.min = 6 * 60; S.day = 1; S.over = false; S.trust = 5; S.zeroDawns = 0;
   S.lastServedFrac = 0; S.servedMw = 0; S.sel = null; S.focus = null; S.toasts = [];
+  S.rp = 0; S.miles = {}; S.up = {}; S.bubbles = []; S.pledges = [];
+  S.usedEv = new Set(); S.spareParts = 0; S.tripRiskUntil = 0;
+  S.bubbleT = 150 + rnd() * 120; S.card = null; S.tripped = false;
   for (const id in SUBS) S.subs[id] = id === 'S1' ? 'live' : 'dead';
   for (const l of LINES) {
     S.lines[l.id] = { dmg: roll(l.dmg) * WORK_MIN_PER_DAY, state: 'dead', t0: 0 };
@@ -71,6 +74,7 @@ function reset() {
     x: SUBS.S1.x + 40 + i * 26, y: SUBS.S1.y + 40, job: null, eta: 0, work: 0,
   }));
   document.getElementById('endcard').classList.remove('show');
+  document.getElementById('drawer').classList.remove('open');
 }
 
 // ---- tutorial ----------------------------------------------------------------
@@ -122,11 +126,210 @@ function tutAdvance() {
   }
 }
 
+// ---- M3: events, pledges, storm re-damage, Grid Ops tree ---------------------
+const soakMin = () => (S.up.switching ? 60 : ENERGIZE_MIN);
+const tightGate = () => (S.up.finesse ? 1.02 : STABILITY.TIGHT);
+
+// cut a served line: re-check what still has a path to the dam
+function cutLine(id, log) {
+  const st = S.lines[id];
+  st.state = 'dead';
+  st.dmg += WORK_MIN_PER_DAY * (1 + Math.floor(rnd() * 2));
+  const reach = new Set(['S1']);
+  const q = ['S1'];
+  while (q.length) {
+    const at = q.shift();
+    for (const l of LINES) {
+      if (S.lines[l.id].state !== 'served') continue;
+      const o = l.a === at ? l.b : l.b === at ? l.a : null;
+      if (o && !reach.has(o)) { reach.add(o); q.push(o); }
+    }
+  }
+  for (const sid in SUBS) if (!reach.has(sid)) S.subs[sid] = 'dead';
+  for (const zid in ZONES) {
+    if (S.subs[ZONES[zid].sub] === 'dead' && S.zones[zid].picked > 0) {
+      S.zones[zid].picked = 0;
+    }
+  }
+  toast(log || `${lineName(id)} LINE IS DOWN — EVERYTHING BEHIND IT WENT DARK`);
+}
+
+const servedLineIds = () => LINES.filter((l) => S.lines[l.id].state === 'served').map((l) => l.id);
+const stuckCrew = (hours) => {
+  const c = S.crews[Math.floor(rnd() * S.crews.length)];
+  c.stuckUntil = S.elapsed() + hours * 60;
+};
+const pledge = (hours, check, yes, no, dTrustYes, dTrustNo) => {
+  S.pledges.push({ due: S.elapsed() + hours * 60, check, yes, no, dy: dTrustYes, dn: dTrustNo });
+};
+
+const EVENTS = [
+  { id: 'tree', tone: 'red', when: (s) => servedLineIds().length > 0, timer: 240,
+    anchor: () => { const id = servedLineIds()[Math.floor(rnd() * servedLineIds().length)]; return { ...lineMid(id), line: id }; },
+    text: (b) => `A trooper calls in a leaning oak over the ${lineName(b.line)} span. It isn't down yet.`,
+    choices: [
+      { label: 'PULL A CREW TO CLEAR IT (3H)', out: 'The oak comes down in pieces, away from the wire.', fx: () => stuckCrew(3) },
+      { label: 'CHANCE IT', out: 'You leave it standing and watch the wind.', fx: (b) => { if (rnd() < 0.4) cutLine(b.line, `THE OAK TOOK THE ${lineName(b.line)} SPAN`); } },
+    ], worst: 1 },
+  { id: 'ice', tone: 'red', when: (s) => s.day >= 4 && servedLineIds().length > 0, timer: 200,
+    anchor: () => { const id = servedLineIds()[Math.floor(rnd() * servedLineIds().length)]; return { ...lineMid(id), line: id }; },
+    text: (b) => `Ice is building on the ${lineName(b.line)} span faster than anyone likes. It sheds or it doesn't. Or a bucket crew knocks it off in the cold.`,
+    choices: [
+      { label: 'SEND THE BUCKET CREW (2H)', out: 'The span is cleared by dark. The crew comes back stiff and quiet.', fx: () => stuckCrew(2) },
+      { label: 'LET IT SHED', out: 'You watch the loading numbers all afternoon.', fx: (b) => { if (rnd() < 0.35) cutLine(b.line, `ICE TOOK THE ${lineName(b.line)} SPAN`); } },
+    ], worst: 1 },
+  { id: 'washout', tone: 'red', when: () => true, timer: 180,
+    anchor: () => ({ x: SUBS.S8.x - 60, y: SUBS.S8.y + 60 }),
+    text: () => 'A crew truck is axle-deep in a washed-out shoulder on the Westbrook road. Nobody is hurt.',
+    choices: [
+      { label: 'WINCH IT OUT (2H)', out: 'Mud everywhere. Truck fine.', fx: () => stuckCrew(2) },
+      { label: 'LEAVE IT, WALK THE TOOLS IN (4H)', out: 'They carry what they can. The truck waits for daylight.', fx: () => stuckCrew(4) },
+    ], worst: 1 },
+  { id: 'hospital', tone: 'amber', when: (s) => s.day >= 2 && S.zones.Z1.picked === 0, timer: 220, once: true,
+    anchor: () => ({ x: ZONES.Z1.x, y: ZONES.Z1.y }),
+    text: () => 'Harlan General is on its backup diesel and burning it fast. The administrator asks, evenly, how long.',
+    choices: [
+      { label: 'PROMISE POWER IN 24H', out: 'She says she will hold you to it.', fx: () => pledge(24, () => S.zones.Z1.picked > 0, 'HARLAN GENERAL HAS POWER. WORD GETS AROUND.', 'THE HOSPITAL IS STILL DARK. THAT PROMISE COST YOU.', 0.5, -0.8) },
+      { label: 'PROMISE NOTHING', out: 'She thanks you for the honesty. It does not feel like thanks.', fx: () => { S.trust = Math.max(0, S.trust - 0.2); } },
+    ], worst: 1 },
+  { id: 'shelter', tone: 'amber', when: (s) => s.day >= 2 && S.zones.Z14.picked === 0, timer: 220, once: true,
+    anchor: () => ({ x: ZONES.Z14.x, y: ZONES.Z14.y }),
+    text: () => 'The university shelter is past capacity and the gym is getting cold. The Red Cross coordinator wants a number, not a speech.',
+    choices: [
+      { label: 'PROMISE POWER IN 36H', out: '"36 hours." She writes it on the whiteboard where everyone can see.', fx: () => pledge(36, () => S.zones.Z14.picked > 0, 'THE SHELTER HAS HEAT. THE WHITEBOARD GETS A CHECKMARK.', 'THE WHITEBOARD STILL SAYS YOUR NAME. TRUST SLIPS.', 0.4, -0.6) },
+      { label: 'NO PROMISES', out: 'She nods once and goes back inside.', fx: () => { S.trust = Math.max(0, S.trust - 0.15); } },
+    ], worst: 1 },
+  { id: 'radio', tone: 'blue', when: (s) => s.day >= 2, timer: 200, once: true,
+    anchor: () => ({ x: ZONES.Z9.x, y: ZONES.Z9.y }),
+    text: () => 'The AM station is still up on a generator and wants you on air. Half the county is listening on car radios.',
+    choices: [
+      { label: 'GIVE HONEST NUMBERS', out: 'You read the numbers straight. It lands better than optimism would have.', fx: () => { S.trust = Math.min(5, S.trust + 0.25); } },
+      { label: 'PROMISE A BIG WEEKEND', out: 'You say what they want to hear.', fx: () => { S.trust = Math.min(5, S.trust + 0.5); pledge(48, () => S.servedMw / S.totalMw > S.lastServedFrac + 0.15, 'THE WEEKEND DELIVERED. PEOPLE REMEMBER.', 'THE BIG WEEKEND DIDN\'T COME. PEOPLE REMEMBER THAT TOO.', 0.2, -0.9); } },
+    ], worst: 0 },
+  { id: 'aid', tone: 'green', when: (s) => s.day >= 3, timer: 260, once: true,
+    anchor: () => ({ x: SUBS.S11.x + 60, y: SUBS.S11.y - 60 }),
+    text: () => 'A mutual-aid crew from two counties over rolls in with their own bucket truck and a thermos the size of a fire extinguisher. They can give you 24 hours.',
+    choices: [
+      { label: 'PUT THEM ON THE LINES', out: 'Crew 4 checks in on your frequency — tap their blue dot on the map to task them.', fx: () => { S.crews.push({ x: SUBS.S11.x, y: SUBS.S11.y, job: null, stuckUntil: 0, expires: S.elapsed() + 1440, temp: true }); syncChips(); } },
+      { label: 'SEND THEM HOME RESTED', out: 'They leave the thermos.', fx: () => { S.rp += 1; } },
+    ], worst: 1 },
+  { id: 'diesel', tone: 'green', when: (s) => S.units.peakers.state !== 'online', timer: 200, once: true,
+    anchor: () => ({ x: UNITS.peakers.x, y: UNITS.peakers.y }),
+    text: () => 'The National Guard can escort a diesel tanker to the Cedar Run peakers tonight if you ask for it now.',
+    choices: [
+      { label: 'ASK FOR THE ESCORT', out: 'The tanker arrives before midnight. The peakers will start hot.', fx: () => { S.rp += 1; } },
+      { label: 'SAVE THE FAVOR', out: 'You keep the number in your pocket.', fx: () => {} },
+    ], worst: 1 },
+  { id: 'parts', tone: 'green', when: (s) => s.day >= 2, timer: 240, once: true,
+    anchor: () => ({ x: ZONES.Z7.x, y: ZONES.Z7.y }),
+    text: () => 'An inventory clerk at the railyard swears there is a pallet of spare hardware in warehouse three, mislabeled since spring.',
+    choices: [
+      { label: 'SEND SOMEONE TO LOOK (1H)', out: 'Cutouts, splices, a whole reel of conductor. The next repair goes fast.', fx: () => { stuckCrew(1); S.spareParts = 1; } },
+      { label: 'IGNORE IT', out: 'Probably nothing anyway.', fx: () => {} },
+    ], worst: 1 },
+  { id: 'downtown', tone: 'amber', when: (s) => s.day >= 3 && S.zones.Z2.picked === 0, timer: 200, once: true,
+    anchor: () => ({ x: ZONES.Z2.x, y: ZONES.Z2.y }),
+    text: () => 'The sheriff reports two smashed storefronts downtown overnight. He is not asking for a lecture about triage.',
+    choices: [
+      { label: 'PROMISE DOWNTOWN IN 24H', out: '"Good," he says, and hangs up.', fx: () => pledge(24, () => S.zones.Z2.picked > 0, 'DOWNTOWN LIGHTS UP. THE RADIO CHATTER GOES QUIET.', 'ANOTHER DARK NIGHT DOWNTOWN. IT GETS WORSE.', 0.35, -0.6) },
+      { label: 'HOLD YOUR SEQUENCE', out: 'You tell him the grid does not care about storefronts. It sounds worse out loud.', fx: () => { S.trust = Math.max(0, S.trust - 0.25); } },
+    ], worst: 1 },
+  { id: 'refreeze', tone: 'amber', when: (s) => s.day >= 4 && s.day <= 5 && loadMw() > 100, timer: 160, once: true,
+    anchor: () => ({ x: SUBS.S5.x, y: SUBS.S5.y - 80 }),
+    text: () => 'Tonight refreezes hard. Demand will spike when every heat pump in the valley hits its backup strips at once.',
+    choices: [
+      { label: 'HOLD PICKUPS UNTIL MIDNIGHT', out: 'You sit on your hands through the cold snap. Nobody thanks you for the outage that didn\'t happen.', fx: () => { S.tripRiskUntil = 0; S.holdUntil = S.elapsed() + 360; } },
+      { label: 'RIDE IT OUT', out: 'You keep picking up load and watch the frequency like a hawk.', fx: () => { S.tripRiskUntil = S.elapsed() + 720; } },
+    ], worst: 1 },
+  { id: 'exec', tone: 'amber', when: (s) => s.day >= 5 && S.trust < 3, timer: 180, once: true,
+    anchor: () => ({ x: ZONES.Z2.x + 80, y: ZONES.Z2.y - 40 }),
+    text: () => 'The county executive calls. He has a press conference in an hour and wants to say the word "restored" in a sentence about you.',
+    choices: [
+      { label: 'GIVE HIM A DATE', out: 'He says the date on live radio before you finish the sentence.', fx: () => pledge(48, () => S.servedMw / S.totalMw > 0.8, 'THE DATE HELD. HE TAKES THE CREDIT. FINE.', 'THE DATE BLEW BY. HE SAYS YOUR NAME ON AIR.', 0.4, -0.8) },
+      { label: 'REFUSE TO GUESS', out: 'The press conference goes badly for both of you.', fx: () => { S.trust = Math.max(0, S.trust - 0.3); } },
+    ], worst: 1 },
+  { id: 'drone', tone: 'blue', when: (s) => servedLineIds().length > 2, timer: 150,
+    anchor: () => ({ x: SUBS.S10.x, y: SUBS.S10.y - 70 }),
+    text: () => 'Somebody is flying a drone over the river crossing to film the lights coming back. It is a beautiful shot. It is also fifty feet from an energized span.',
+    choices: [
+      { label: 'SEND A PATROL TO SHOO THEM', out: 'The pilot apologizes and posts the footage anyway. It looks incredible.', fx: () => { S.trust = Math.min(5, S.trust + 0.15); } },
+      { label: 'IGNORE THEM', out: 'You have bigger problems than cinematography.', fx: () => { if (rnd() < 0.15) stuckCrew(1); } },
+    ], worst: 1 },
+];
+
+function spawnBubble(evId) {
+  const ev = EVENTS.find((e) => e.id === evId);
+  if (!ev || (ev.once && S.usedEv.has(ev.id)) || !ev.when(S)) return false;
+  const a = ev.anchor();
+  S.bubbles.push({ ev, x: a.x, y: a.y, line: a.line || null, born: S.elapsed(), timer: ev.timer });
+  S.usedEv.add(ev.id);
+  return true;
+}
+
+function updateBubbles(dtMin) {
+  S.bubbleT -= dtMin;
+  if (S.bubbleT <= 0 && S.bubbles.length < 2) {
+    S.bubbleT = 260 + rnd() * 240;
+    const pool = EVENTS.filter((e) => !(e.once && S.usedEv.has(e.id)) && e.when(S));
+    if (pool.length) spawnBubble(pool[Math.floor(rnd() * pool.length)].id);
+  }
+  for (let i = S.bubbles.length - 1; i >= 0; i--) {
+    const b = S.bubbles[i];
+    if (S.elapsed() - b.born >= b.timer) {
+      S.bubbles.splice(i, 1);
+      const c = b.ev.choices[b.ev.worst];
+      toast('IGNORED · ' + c.out);
+      c.fx(b);
+      if (S.card && S.card.b === b) closeCard();
+    }
+  }
+}
+
+function updatePledges() {
+  for (let i = S.pledges.length - 1; i >= 0; i--) {
+    const p = S.pledges[i];
+    if (p.check()) {
+      S.trust = Math.min(5, S.trust + p.dy);
+      toast(p.yes);
+      S.pledges.splice(i, 1);
+    } else if (S.elapsed() >= p.due) {
+      S.trust = Math.max(0, S.trust + p.dn);
+      toast(p.no);
+      S.pledges.splice(i, 1);
+    }
+  }
+}
+
+function checkMilestones() {
+  const frac = S.servedMw / S.totalMw;
+  const award = (key, msg) => {
+    if (S.miles[key]) return;
+    S.miles[key] = true;
+    S.rp += 1;
+    toast(`+1 OPS POINT · ${msg}`);
+  };
+  for (const pct of [20, 40, 60, 80]) if (frac >= pct / 100) award('pct' + pct, `${pct}% OF THE COUNTY SERVED`);
+  if (S.zones.Z1.picked > 0) award('hosp', 'HARLAN GENERAL ENERGIZED');
+  for (const uid of ['coal', 'ccgt', 'peakers', 'tie']) {
+    if (S.units[uid].state === 'online') award('u_' + uid, `${UNITS[uid].name} ON THE BUS`);
+  }
+}
+
+const UPGRADES = [
+  { id: 'fleet', cost: 2, name: 'FLEET STAGING', desc: 'Crews drive 60% faster.' },
+  { id: 'rigs', cost: 2, name: 'HEAVY RIGS', desc: 'Repairs go 40% faster.' },
+  { id: 'switching', cost: 2, name: 'HOT SWITCHING', desc: 'Powering up a line takes 1 hour, not 2.' },
+  { id: 'comms', cost: 2, name: 'PRESS BRIEFINGS', desc: 'Trust decays 40% slower each dark morning.' },
+  { id: 'outreach', cost: 2, name: 'COMMUNITY OUTREACH', desc: '+0.15 trust every dawn.' },
+  { id: 'finesse', cost: 3, name: 'LOAD FINESSE', desc: 'Pick up load closer to the edge, half the trip risk.' },
+];
+
 // the single suggested next action, always current
 function nextHint() {
   S.hintLineId = null;
   if (S.over) return '';
   if (TUT.step) return tutHint();
+  if (S.bubbles.length && !S.card) return 'A FIELD REPORT NEEDS A DECISION — TAP THE PULSING BUBBLE';
   const ready = LINES.find((l) => S.lines[l.id].state === 'dead'
     && S.lines[l.id].dmg <= 0 && lineTouchesLive(l));
   if (ready) {
@@ -201,19 +404,28 @@ function tick(dtMin) {
   if (S.min >= 24 * 60) { S.min -= 24 * 60; S.day += 1; dawn(); }
 
   // crews travel & work
-  for (const c of S.crews) {
-    if (!c.job) continue;
+  for (let ci = S.crews.length - 1; ci >= 0; ci--) {
+    const c = S.crews[ci];
+    if (c.expires && S.elapsed() >= c.expires) {
+      S.crews.splice(ci, 1);
+      toast('THE MUTUAL-AID CREW HEADS HOME. GOOD PEOPLE.');
+      if (S.sel === ci) S.sel = null;
+      syncChips();
+      continue;
+    }
+    if (!c.job || (c.stuckUntil && S.elapsed() < c.stuckUntil)) continue;
     const d = Math.hypot(c.dest.x - c.x, c.dest.y - c.y);
-    const step = CREW_SPEED * dtMin;
+    const step = CREW_SPEED * (S.up.fleet ? 1.6 : 1) * dtMin;
     if (d > 14) {
       c.x += ((c.dest.x - c.x) / d) * Math.min(step, d);
       c.y += ((c.dest.y - c.y) / d) * Math.min(step, d);
     } else {
       const pool = c.job.kind === 'line' ? S.lines[c.job.id] : S.zones[c.job.id];
       if (pool.dmg > 0) {
-        pool.dmg -= dtMin;
+        pool.dmg -= dtMin * (S.up.rigs ? 1.4 : 1) * (S.spareParts ? 3 : 1);
         if (pool.dmg <= 0) {
           pool.dmg = 0;
+          if (S.spareParts) S.spareParts = 0;
           toast(`${c.job.kind === 'line' ? lineName(c.job.id) + ' LINE' : ZONES[c.job.id].name} FIXED`);
           c.job = null;
           syncChips();
@@ -225,11 +437,15 @@ function tick(dtMin) {
   // energizing lines settle
   for (const l of LINES) {
     const st = S.lines[l.id];
-    if (st.state === 'energizing' && S.elapsed() - st.t0 >= ENERGIZE_MIN) {
+    if (st.state === 'energizing' && S.elapsed() - st.t0 >= soakMin()) {
       st.state = 'served';
       S.subs[l.a] = 'live'; S.subs[l.b] = 'live';
     }
   }
+
+  updateBubbles(dtMin);
+  updatePledges();
+  checkMilestones();
 
   // units: staged starts once their sub is live
   for (const id in UNITS) {
@@ -250,16 +466,17 @@ function tick(dtMin) {
 
   // load pickup: every 30 sim-min, each eligible zone tries one block
   S.pickAcc = (S.pickAcc || 0) + dtMin;
-  if (S.pickAcc >= 30) {
+  if (S.pickAcc >= 30 && !(S.holdUntil && S.elapsed() < S.holdUntil)) {
     S.pickAcc = 0;
     const gen = genMw();
+    const tripMult = (S.up.finesse ? 0.5 : 1) * (S.tripRiskUntil > S.elapsed() ? 2 : 1);
     for (const id in ZONES) {
       const z = ZONES[id], st = S.zones[id];
       if (S.subs[z.sub] !== 'live' || st.dmg > 0 || st.picked >= z.blocks.length) continue;
       const block = z.blocks[st.picked];
       const after = loadMw() + block;
-      if (after * STABILITY.TIGHT > gen) continue;                 // blocked: too tight
-      if (after * STABILITY.SOLID > gen && rnd() < TRIP_CHANCE.TIGHT) { trip(); return; }
+      if (after * tightGate() > gen) continue;                     // blocked: too tight
+      if (after * STABILITY.SOLID > gen && rnd() < TRIP_CHANCE.TIGHT * tripMult) { trip(); return; }
       st.picked += 1;
     }
   }
@@ -295,9 +512,24 @@ function trip() {
 
 function dawn() {
   const frac = S.servedMw / S.totalMw;
-  S.trust = Math.max(0, S.trust - (1 - frac) * 0.8);
+  S.trust = Math.max(0, S.trust - (1 - frac) * 0.8 * (S.up.comms ? 0.6 : 1));
   if (frac > S.lastServedFrac + 0.001) S.trust = Math.min(5, S.trust + 0.4);
+  if (S.up.outreach) S.trust = Math.min(5, S.trust + 0.15);
   S.lastServedFrac = frac;
+
+  // the storm isn't done with you: fresh damage overnight into Days 2 and 4
+  if (S.day === 2 || S.day === 4) {
+    const hits = 2 + Math.floor(rnd() * 2);
+    const label = S.day === 2 ? 'THE RAIN BANDS' : 'THE ICE';
+    let cut = 0;
+    for (let i = 0; i < hits; i++) {
+      const l = LINES[Math.floor(rnd() * LINES.length)];
+      const st = S.lines[l.id];
+      if (st.state === 'served' && cut === 0) { cutLine(l.id, `${label} TOOK THE ${lineName(l.id)} SPAN OVERNIGHT`); cut++; }
+      else { st.dmg += WORK_MIN_PER_DAY * (1 + Math.floor(rnd() * 2)); if (st.state === 'energizing') st.state = 'dead'; }
+    }
+    toast(`${label} DID FRESH DAMAGE OVERNIGHT — CHECK THE RED MARKERS`);
+  }
   if (S.trust <= 0.01) {
     S.zeroDawns += 1;
     if (S.zeroDawns >= 2) return lose();
@@ -308,8 +540,11 @@ function dawn() {
 
 function win() {
   S.over = true;
+  const grade = S.day <= 9 && S.trust >= 3.5 ? 'A'
+    : S.day <= 12 && S.trust >= 2.5 ? 'B'
+    : S.day <= 16 ? 'C' : 'D';
   end('HARLAN VALLEY · LIGHTS ON',
-    `${Math.round(S.totalMw)} MW restored · Day ${S.day} · Trust ${S.trust.toFixed(1)}/5`);
+    `${Math.round(S.totalMw)} MW restored · Day ${S.day} · Trust ${S.trust.toFixed(1)}/5 · GRADE ${grade}`);
 }
 function lose() {
   S.over = true;
@@ -663,6 +898,25 @@ function draw() {
   }
 
   if (vignetteLayer) ctx.drawImage(vignetteLayer, 0, 0, w, h);
+
+  // event bubbles ride above everything — they are the interrupt
+  const TONE = { red: '#f05858', amber: '#f0a028', blue: '#5ac8fa', green: '#7bc47f' };
+  for (const b of S.bubbles) {
+    const p = toScreen(b.x, b.y);
+    const col = TONE[b.ev.tone];
+    const pulse = 1 + Math.sin(now / 260) * 0.12;
+    const bg = ctx.createRadialGradient(p.x, p.y, 2, p.x, p.y, 26 * pulse);
+    bg.addColorStop(0, col + '55'); bg.addColorStop(1, col + '00');
+    ctx.fillStyle = bg; ctx.beginPath(); ctx.arc(p.x, p.y, 26 * pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#121a24'; ctx.strokeStyle = col; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 13, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    const frac = Math.max(0, 1 - (S.elapsed() - b.born) / b.timer);
+    ctx.beginPath(); ctx.arc(p.x, p.y, 17, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac);
+    ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.fillStyle = col; ctx.font = '700 13px ui-monospace, monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('!', p.x, p.y + 1);
+  }
 }
 
 // ---- input -------------------------------------------------------------------
@@ -689,6 +943,10 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     return best;
   };
+
+  // event bubbles outrank everything
+  const bubbleHit = nearest(S.bubbles.map((b) => ({ x: b.x, y: b.y, b })), 32);
+  if (bubbleHit) { openCard(bubbleHit.b); return; }
 
   // crews are always tappable (switch selection)
   const crewHit = nearest(S.crews.map((c, i) => ({ x: c.x, y: c.y, id: i })), 24);
@@ -732,7 +990,34 @@ canvas.addEventListener('pointerdown', (e) => {
   renderDrawer();
 });
 
+function openCard(b) {
+  S.card = { b, resumeSpeed: S.speed || 1 };
+  setSpeed(0);
+  const drawer = document.getElementById('drawer');
+  const tone = { red: '#f05858', amber: '#f0a028', blue: '#5ac8fa', green: '#7bc47f' }[b.ev.tone];
+  drawer.innerHTML = `<div class="t" style="color:${tone}">FIELD REPORT</div>
+    <div class="row">${b.ev.text(b)}</div>
+    ${b.ev.choices.map((c, i) => `<button class="act${i > 0 ? ' alt' : ''}" data-choice="${i}">${c.label}</button>`).join('')}`;
+  drawer.classList.add('open');
+  for (const btn of drawer.querySelectorAll('[data-choice]')) {
+    btn.addEventListener('click', () => {
+      const c = b.ev.choices[Number(btn.dataset.choice)];
+      S.bubbles = S.bubbles.filter((x) => x !== b);
+      c.fx(b);
+      toast(c.out);
+      closeCard();
+    });
+  }
+}
+function closeCard() {
+  if (!S.card) return;
+  setSpeed(S.card.resumeSpeed);
+  S.card = null;
+  document.getElementById('drawer').classList.remove('open');
+}
+
 function renderDrawer() {
+  if (S.card) return;   // a field report owns the drawer until answered
   const drawer = document.getElementById('drawer');
   if (!S.focus) { drawer.classList.remove('open'); return; }
   const f = S.focus;
@@ -747,7 +1032,7 @@ function renderDrawer() {
       : 'FIXED — NO POWER HERE YET. LIGHT A PATH TO IT FIRST.';
     html = `<div class="t">${lineName(f.id)} LINE</div><div class="row">${status}</div>`;
     if (st.state === 'dead' && st.dmg <= 0 && lineTouchesLive(l)) {
-      html += `<button class="act" data-energize="${f.id}">POWER UP THIS LINE (${ENERGIZE_MIN / 60} HRS)</button>`;
+      html += `<button class="act" data-energize="${f.id}">POWER UP THIS LINE (${soakMin() / 60} HR${soakMin() > 60 ? 'S' : ''})</button>`;
     }
   } else if (f.kind === 'PLANT') {
     const u = UNITS[f.id], st = S.units[f.id];
@@ -776,9 +1061,12 @@ function renderDrawer() {
 function syncChips() {
   for (const [i, c] of S.crews.entries()) {
     const el = document.getElementById('crew' + i);
+    if (!el) continue;   // mutual-aid crew 4 lives on the map only
     el.classList.toggle('sel', S.sel === i);
-    el.textContent = `C${i + 1} ${c.job ? '⚒' : '·'}`;
+    el.textContent = `C${i + 1} ${(c.stuckUntil && S.elapsed() < c.stuckUntil) ? '✕' : c.job ? '⚒' : '·'}`;
   }
+  const ops = document.getElementById('ops');
+  if (ops) ops.textContent = `OPS · ${S.rp}`;
 }
 for (const i of [0, 1, 2]) {
   document.getElementById('crew' + i).addEventListener('click', () => {
@@ -811,6 +1099,36 @@ document.getElementById('help').addEventListener('click', () => {
 });
 document.getElementById('legendclose').addEventListener('click', () => {
   document.getElementById('legend').classList.remove('show');
+});
+
+function renderOps() {
+  const list = document.getElementById('uplist');
+  list.innerHTML = UPGRADES.map((u) => {
+    const owned = !!S.up[u.id];
+    const afford = S.rp >= u.cost;
+    return `<div class="uprow${owned ? ' owned' : ''}">
+      <div><div class="nm">${u.name}</div><div class="ds">${u.desc}</div></div>
+      <button class="buy" data-up="${u.id}" ${owned || !afford ? 'disabled' : ''}>${owned ? 'OWNED' : u.cost + ' PTS'}</button>
+    </div>`;
+  }).join('');
+  for (const btn of list.querySelectorAll('[data-up]')) {
+    btn.addEventListener('click', () => {
+      const u = UPGRADES.find((x) => x.id === btn.dataset.up);
+      if (S.up[u.id] || S.rp < u.cost) return;
+      S.rp -= u.cost;
+      S.up[u.id] = true;
+      toast(`${u.name} ACTIVE`);
+      syncChips();
+      renderOps();
+    });
+  }
+}
+document.getElementById('ops').addEventListener('click', () => {
+  renderOps();
+  document.getElementById('opspanel').classList.add('show');
+});
+document.getElementById('opsclose').addEventListener('click', () => {
+  document.getElementById('opspanel').classList.remove('show');
 });
 
 function setSpeed(i) {
@@ -865,6 +1183,7 @@ requestAnimationFrame(frame);
 // debug/test hook
 window.BS = {
   S, LINES, ZONES, TUT, lineName, toScreen: (x, y) => toScreen(x, y), lineMid,
+  EVENTS, spawnBubble, openCard, UPGRADES,
   ff: (min) => { for (let i = 0; i < min; i += 5) tick(5); },
   assign: (ci, kind, id) => assignCrew(ci, { kind, id }),
   energize: tryEnergize,
